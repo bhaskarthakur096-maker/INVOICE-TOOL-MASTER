@@ -739,7 +739,7 @@ async function extractInvoiceData(file){
 {"contactName":"","invoiceNo":"","reference":"","issueDate":"YYYY-MM-DD","dueDate":"YYYY-MM-DD","currency":"GBP","notes":"","type":"ACCPAY","lineItems":[{"description":"","quantity":1,"unitPrice":0,"accountCode":"","taxRateIndex":0}]}
 type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3=10%,4=13%,5=15%,6=20%. Missing fields: empty string or 0.`;
   const contentBlock=isPdf?{type:'document',source:{type:'base64',media_type:mediaType,data:base64}}:{type:'image',source:{type:'base64',media_type:mediaType,data:base64}};
-  const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,system:systemPrompt,messages:[{role:'user',content:[contentBlock,{type:'text',text:'Extract invoice data as JSON.'}]}]})});
+  const resp=await fetch('https://corsproxy.io/?https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,system:systemPrompt,messages:[{role:'user',content:[contentBlock,{type:'text',text:'Extract invoice data as JSON.'}]}]})});
   if(!resp.ok)throw new Error('AI API error '+resp.status);
   const data=await resp.json();let raw=data.content.map(c=>c.text||'').join('');raw=raw.replace(/```json|```/g,'').trim();
   return JSON.parse(raw);
