@@ -474,6 +474,7 @@
 
 <div id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 /* ============================================================
    CONFIG — replace with your Anthropic API key
@@ -734,15 +735,51 @@ function skipCurrentItem(){if(currentQueueIdx===null)return;invoiceQueue[current
 
 /* AI EXTRACTION */
 async function extractInvoiceData(file){
-  const base64=await fileToBase64(file);const isPdf=file.type==='application/pdf';
-  const mediaType=isPdf?'application/pdf':file.type;
   const prompt=`You are an invoice data extraction assistant. Extract ALL fields and return ONLY valid JSON, no explanation, no markdown fences:
 {"contactName":"","invoiceNo":"","reference":"","issueDate":"YYYY-MM-DD","dueDate":"YYYY-MM-DD","currency":"GBP","notes":"","type":"ACCPAY","lineItems":[{"description":"","quantity":1,"unitPrice":0,"accountCode":"","taxRateIndex":0}]}
 type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3=10%,4=13%,5=15%,6=20%. Missing fields: empty string or 0.`;
-  const messages=[{role:'user',content:[{type:'text',text:prompt},{type:'image_url',image_url:{url:`data:${mediaType};base64,${base64}`}}]}];
-  const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+ANTHROPIC_API_KEY,'HTTP-Referer':'https://bhaskarthakur096-maker.github.io','X-Title':'Sterling Wells Invoice Tool'},body:JSON.stringify({model:'google/gemma-4-31b-it:free',messages,max_tokens:1000})});
-  if(!resp.ok)throw new Error('AI API error '+resp.status);
-  const data=await resp.json();let raw=data.choices?.[0]?.message?.content||'';raw=raw.replace(/```json|```/g,'').trim();
+
+  let imageBase64, imageType;
+  const isPdf = file.type === 'application/pdf';
+
+  if(isPdf){
+    // Render first page of PDF to canvas using pdf.js CDN
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    if(!pdfjsLib){ throw new Error('PDF.js not loaded'); }
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({scale: 2.0});
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+    imageBase64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
+    imageType = 'image/jpeg';
+  } else {
+    imageBase64 = await fileToBase64(file);
+    imageType = file.type;
+  }
+
+  const messages=[{role:'user',content:[
+    {type:'text',text:prompt},
+    {type:'image_url',image_url:{url:`data:${imageType};base64,${imageBase64}`}}
+  ]}];
+
+  const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+ANTHROPIC_API_KEY,'HTTP-Referer':'https://bhaskarthakur096-maker.github.io','X-Title':'Sterling Wells Invoice Tool'},
+    body:JSON.stringify({model:'meta-llama/llama-4-maverick:free',messages,max_tokens:1000})
+  });
+  if(!resp.ok){
+    const errText = await resp.text();
+    let msg = 'AI API error '+resp.status;
+    try{ const j=JSON.parse(errText); msg=j.error?.message||msg; }catch(e){}
+    throw new Error(msg);
+  }
+  const data=await resp.json();
+  let raw=data.choices?.[0]?.message?.content||'';
+  raw=raw.replace(/```json|```/g,'').trim();
   return JSON.parse(raw);
 }
 
