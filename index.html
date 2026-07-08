@@ -739,38 +739,36 @@ async function extractInvoiceData(file){
 {"contactName":"","invoiceNo":"","reference":"","issueDate":"YYYY-MM-DD","dueDate":"YYYY-MM-DD","currency":"GBP","notes":"","type":"ACCPAY","lineItems":[{"description":"","quantity":1,"unitPrice":0,"accountCode":"","taxRateIndex":0}]}
 type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3=10%,4=13%,5=15%,6=20%. Missing fields: empty string or 0.`;
 
-  let imageBase64, imageType;
   const isPdf = file.type === 'application/pdf';
+  let messageContent;
 
   if(isPdf){
-    // Render first page of PDF to canvas using pdf.js CDN
+    // Extract text directly from PDF using pdf.js — fast and accurate
     const arrayBuffer = await file.arrayBuffer();
     const pdfjsLib = window['pdfjs-dist/build/pdf'];
-    if(!pdfjsLib){ throw new Error('PDF.js not loaded'); }
+    if(!pdfjsLib) throw new Error('PDF.js not loaded');
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-    const page = await pdf.getPage(1);
-    const viewport = page.getViewport({scale: 2.0});
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width; canvas.height = viewport.height;
-    await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
-    imageBase64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
-    imageType = 'image/jpeg';
+    let pdfText = '';
+    for(let i=1; i<=pdf.numPages; i++){
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      pdfText += textContent.items.map(item => item.str).join(' ') + '\n';
+    }
+    messageContent = [{type:'text', text: prompt + '\n\nInvoice text:\n' + pdfText}];
   } else {
-    imageBase64 = await fileToBase64(file);
-    imageType = file.type;
+    // For images, send as base64
+    const base64 = await fileToBase64(file);
+    messageContent = [
+      {type:'text', text: prompt},
+      {type:'image_url', image_url:{url:`data:${file.type};base64,${base64}`}}
+    ];
   }
 
-  const messages=[{role:'user',content:[
-    {type:'text',text:prompt},
-    {type:'image_url',image_url:{url:`data:${imageType};base64,${imageBase64}`}}
-  ]}];
-
-  // Try multiple free models in sequence if one is rate limited
-  const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions',{
     method:'POST',
     headers:{'Content-Type':'application/json','Authorization':'Bearer '+ANTHROPIC_API_KEY,'HTTP-Referer':'https://bhaskarthakur096-maker.github.io','X-Title':'Sterling Wells Invoice Tool'},
-    body:JSON.stringify({model:'openrouter/free',messages,max_tokens:1000})
+    body:JSON.stringify({model:'openrouter/free', messages:[{role:'user', content: messageContent}], max_tokens:1000})
   });
   if(!resp.ok){
     const errText=await resp.text();
@@ -780,7 +778,6 @@ type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3
   }
   const data=await resp.json();
   let raw=data.choices?.[0]?.message?.content||'';
-  // Strip markdown fences, safety text, and anything before the first {
   raw=raw.replace(/```json|```/g,'').trim();
   const jsonStart=raw.indexOf('{');
   const jsonEnd=raw.lastIndexOf('}');
@@ -788,89 +785,4 @@ type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3
   raw=raw.substring(jsonStart, jsonEnd+1);
   return JSON.parse(raw);
 }
-
-function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('File read failed'));r.readAsDataURL(file);});}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-
-/* FORM (QUEUE) */
-function fillForm(inv){
-  if(inv.contactName)document.getElementById('contactName').value=inv.contactName;
-  if(inv.invoiceNo)document.getElementById('invoiceNo').value=inv.invoiceNo;
-  if(inv.reference)document.getElementById('reference').value=inv.reference;
-  if(inv.issueDate)document.getElementById('issueDate').value=inv.issueDate;
-  if(inv.dueDate)document.getElementById('dueDate').value=inv.dueDate;
-  if(inv.notes)document.getElementById('notes').value=inv.notes;
-  if(inv.currency){const sel=document.getElementById('currency');for(const o of sel.options)if(o.value===inv.currency){sel.value=inv.currency;break;}}
-  if(inv.type==='ACCPAY'||inv.type==='ACCREC')setType(inv.type);
-  document.getElementById('lineItems').innerHTML='';lineCount=0;
-  if(inv.lineItems?.length)inv.lineItems.forEach(l=>addLine(l.description||'',l.quantity||1,l.unitPrice||0,l.accountCode||'',l.taxRateIndex||0));
-  else addLine();checkNewContact();
-}
-
-function buildPayload(){
-  const rows=document.querySelectorAll('#lineItems tr');const lineItems=[];
-  rows.forEach(tr=>{const ins=tr.querySelectorAll('input');const sel=tr.querySelector('select');if(!ins.length)return;lineItems.push({Description:ins[0].value,Quantity:parseFloat(ins[1].value)||0,UnitAmount:parseFloat(ins[2].value)||0,AccountCode:ins[3].value,TaxType:sel?TAX_RATES[parseInt(sel.value)].xeroName:'NONE'});});
-  return{Type:invoiceType,Contact:{Name:document.getElementById('contactName').value.trim()},InvoiceNumber:document.getElementById('invoiceNo').value.trim(),Reference:document.getElementById('reference').value.trim(),Date:document.getElementById('issueDate').value,DueDate:document.getElementById('dueDate').value,CurrencyCode:document.getElementById('currency').value,LineItems:lineItems,Status:'DRAFT',LineAmountTypes:'EXCLUSIVE'};
-}
-
-function setType(type){invoiceType=type;document.getElementById('btn-ACCPAY').className='type-btn'+(type==='ACCPAY'?' active-bill':'');document.getElementById('btn-ACCREC').className='type-btn'+(type==='ACCREC'?' active-inv':'');document.getElementById('contactLabel').textContent=type==='ACCPAY'?'Supplier name':'Customer name';}
-function checkNewContact(){const val=document.getElementById('contactName').value.trim();document.getElementById('newContactHint').style.display=(val.length>1&&!knownContacts.some(c=>c.toLowerCase()===val.toLowerCase()))?'block':'none';}
-function addLine(desc='',qty=1,price=0,account='',taxIdx=0){lineCount++;const id=lineCount;const tbody=document.getElementById('lineItems');const tr=document.createElement('tr');tr.id='line-'+id;const opts=TAX_RATES.map((t,i)=>`<option value="${i}" ${i===taxIdx?'selected':''}>${t.label}</option>`).join('');tr.innerHTML=`<td class="col-desc"><input type="text" value="${desc}" placeholder="Item description" oninput="recalc()"/></td><td><input type="number" min="0" step="any" value="${qty}" oninput="recalc()"/></td><td><input type="number" min="0" step="any" value="${price}" oninput="recalc()"/></td><td><input type="text" value="${account}" placeholder="200"/></td><td><select onchange="recalc()">${opts}</select></td><td style="text-align:right;font-size:13px;font-weight:600;" id="amt-${id}">0.00</td><td><button class="del-btn" onclick="removeLine(${id})">\u2715</button></td>`;tbody.appendChild(tr);recalc();}
-function removeLine(id){document.getElementById('line-'+id)?.remove();recalc();}
-function recalc(){let sub=0,tax=0;const curr=document.getElementById('currency').value;document.querySelectorAll('#lineItems tr').forEach(tr=>{const ins=tr.querySelectorAll('input');const sel=tr.querySelector('select');if(!ins.length)return;const qty=parseFloat(ins[1].value)||0,price=parseFloat(ins[2].value)||0,amt=qty*price,rate=sel?TAX_RATES[parseInt(sel.value)].rate:0,taxAmt=amt*rate/100;sub+=amt;tax+=taxAmt;const cell=tr.querySelector('td:nth-child(6)');if(cell)cell.textContent=(amt+taxAmt).toFixed(2);});document.getElementById('subtotal').textContent=sub.toFixed(2)+' '+curr;document.getElementById('taxTotal').textContent=tax.toFixed(2)+' '+curr;document.getElementById('grandTotal').textContent=(sub+tax).toFixed(2)+' '+curr;}
-
-/* ATTACHMENTS */
-function handleAuditFiles(input){Array.from(input.files).forEach(file=>{auditAttachments.push({name:file.name,size:file.size,file});});renderAttachList();input.value='';}
-function renderAttachList(){const list=document.getElementById('attachList');list.innerHTML='';auditAttachments.forEach((a,i)=>{const ext=a.name.split('.').pop().toLowerCase();const icon=ext==='pdf'?'\uD83D\uDCC4':['png','jpg','jpeg','webp'].includes(ext)?'\uD83D\uDDBC\uFE0F':'\uD83D\uDCCE';const sz=a.size>1048576?(a.size/1048576).toFixed(1)+' MB':Math.round(a.size/1024)+' KB';const div=document.createElement('div');div.className='attach-item';div.innerHTML=`<span class="attach-icon">${icon}</span><span class="attach-name">${a.name}</span><span class="attach-size">${sz}</span><button class="attach-remove" onclick="removeAttach(${i})">\u2715</button>`;list.appendChild(div);});}
-function removeAttach(i){auditAttachments.splice(i,1);renderAttachList();}
-
-/* MANUAL PAGE */
-function handleSingleUpload(input){const file=input.files[0];if(!file)return;const bar=document.getElementById('singleExtractingBar');bar.classList.add('show');document.getElementById('singleExtractingMsg').textContent='Reading with AI\u2026';extractInvoiceData(file).then(inv=>{fillForm2(inv);bar.classList.remove('show');showToast('Extracted!','success');}).catch(e=>{bar.classList.remove('show');showToast('Extraction failed: '+e.message,'error');});input.value='';}
-function initForm2(){lineCount2=0;auditAttachments2=[];document.getElementById('lineItems2').innerHTML='';document.getElementById('attachList2').innerHTML='';const today=new Date().toISOString().split('T')[0];document.getElementById('issueDate2').value=today;const due=new Date();due.setDate(due.getDate()+30);document.getElementById('dueDate2').value=due.toISOString().split('T')[0];addLine2();}
-function fillForm2(inv){if(inv.contactName)document.getElementById('contactName2').value=inv.contactName;if(inv.invoiceNo)document.getElementById('invoiceNo2').value=inv.invoiceNo;if(inv.reference)document.getElementById('reference2').value=inv.reference;if(inv.issueDate)document.getElementById('issueDate2').value=inv.issueDate;if(inv.dueDate)document.getElementById('dueDate2').value=inv.dueDate;if(inv.notes)document.getElementById('notes2').value=inv.notes;if(inv.currency){const sel=document.getElementById('currency2');for(const o of sel.options)if(o.value===inv.currency){sel.value=inv.currency;break;}}if(inv.type==='ACCPAY'||inv.type==='ACCREC')setType2(inv.type);document.getElementById('lineItems2').innerHTML='';lineCount2=0;if(inv.lineItems?.length)inv.lineItems.forEach(l=>addLine2(l.description||'',l.quantity||1,l.unitPrice||0,l.accountCode||'',l.taxRateIndex||0));else addLine2();checkNewContact2();}
-function setType2(type){invoiceType2=type;document.getElementById('btn-ACCPAY2').className='type-btn'+(type==='ACCPAY'?' active-bill':'');document.getElementById('btn-ACCREC2').className='type-btn'+(type==='ACCREC'?' active-inv':'');document.getElementById('contactLabel2').textContent=type==='ACCPAY'?'Supplier name':'Customer name';}
-function checkNewContact2(){const val=document.getElementById('contactName2').value.trim();document.getElementById('newContactHint2').style.display=(val.length>1&&!knownContacts.some(c=>c.toLowerCase()===val.toLowerCase()))?'block':'none';}
-function addLine2(desc='',qty=1,price=0,account='',taxIdx=0){lineCount2++;const id=lineCount2;const tbody=document.getElementById('lineItems2');const tr=document.createElement('tr');tr.id='line2-'+id;const opts=TAX_RATES.map((t,i)=>`<option value="${i}" ${i===taxIdx?'selected':''}>${t.label}</option>`).join('');tr.innerHTML=`<td class="col-desc"><input type="text" value="${desc}" placeholder="Item description" oninput="recalc2()"/></td><td><input type="number" min="0" step="any" value="${qty}" oninput="recalc2()"/></td><td><input type="number" min="0" step="any" value="${price}" oninput="recalc2()"/></td><td><input type="text" value="${account}" placeholder="200"/></td><td><select onchange="recalc2()">${opts}</select></td><td style="text-align:right;font-size:13px;font-weight:600;" id="amt2-${id}">0.00</td><td><button class="del-btn" onclick="removeLine2(${id})">\u2715</button></td>`;tbody.appendChild(tr);recalc2();}
-function removeLine2(id){document.getElementById('line2-'+id)?.remove();recalc2();}
-function recalc2(){let sub=0,tax=0;const curr=document.getElementById('currency2').value;document.querySelectorAll('#lineItems2 tr').forEach(tr=>{const ins=tr.querySelectorAll('input');const sel=tr.querySelector('select');if(!ins.length)return;const qty=parseFloat(ins[1].value)||0,price=parseFloat(ins[2].value)||0,amt=qty*price,rate=sel?TAX_RATES[parseInt(sel.value)].rate:0,taxAmt=amt*rate/100;sub+=amt;tax+=taxAmt;const cell=tr.querySelector('td:nth-child(6)');if(cell)cell.textContent=(amt+taxAmt).toFixed(2);});document.getElementById('subtotal2').textContent=sub.toFixed(2)+' '+curr;document.getElementById('taxTotal2').textContent=tax.toFixed(2)+' '+curr;document.getElementById('grandTotal2').textContent=(sub+tax).toFixed(2)+' '+curr;}
-function handleAuditFiles2(input){Array.from(input.files).forEach(file=>{auditAttachments2.push({name:file.name,size:file.size,file});});const list=document.getElementById('attachList2');list.innerHTML='';auditAttachments2.forEach((a,i)=>{const ext=a.name.split('.').pop().toLowerCase();const icon=ext==='pdf'?'\uD83D\uDCC4':['png','jpg','jpeg','webp'].includes(ext)?'\uD83D\uDDBC\uFE0F':'\uD83D\uDCCE';const sz=a.size>1048576?(a.size/1048576).toFixed(1)+' MB':Math.round(a.size/1024)+' KB';const div=document.createElement('div');div.className='attach-item';div.innerHTML=`<span class="attach-icon">${icon}</span><span class="attach-name">${a.name}</span><span class="attach-size">${sz}</span><button class="attach-remove" onclick="removeAttach2(${i})">\u2715</button>`;list.appendChild(div);});input.value='';}
-function removeAttach2(i){auditAttachments2.splice(i,1);const tmp=[...auditAttachments2];auditAttachments2=[];tmp.forEach(a=>auditAttachments2.push(a));handleAuditFiles2({files:[]});}
-async function submitManualToXero(){
-  const contact=document.getElementById('contactName2').value.trim(),invNo=document.getElementById('invoiceNo2').value.trim();
-  if(!contact){showToast('Contact name is required.','error');return;}if(!invNo){showToast('Invoice number is required.','error');return;}
-  const rows=document.querySelectorAll('#lineItems2 tr');const lineItems=[];rows.forEach(tr=>{const ins=tr.querySelectorAll('input');const sel=tr.querySelector('select');if(!ins.length)return;lineItems.push({Description:ins[0].value,Quantity:parseFloat(ins[1].value)||0,UnitAmount:parseFloat(ins[2].value)||0,AccountCode:ins[3].value,TaxType:sel?TAX_RATES[parseInt(sel.value)].xeroName:'NONE'});});
-  const payload={Type:invoiceType2,Contact:{Name:contact},InvoiceNumber:invNo,Reference:document.getElementById('reference2').value.trim(),Date:document.getElementById('issueDate2').value,DueDate:document.getElementById('dueDate2').value,CurrencyCode:document.getElementById('currency2').value,LineItems:lineItems,Status:'DRAFT',LineAmountTypes:'EXCLUSIVE'};
-  const btn=document.getElementById('submitBtn2');btn.disabled=true;btn.textContent='Pushing\u2026';
-  try{const pushed=await pushToXero(payload,auditAttachments2);const typeName=invoiceType2==='ACCPAY'?'Bill':'Invoice';showToast(`Draft ${typeName} "${pushed.InvoiceNumber||invNo}" created in Xero \u2713`,'success');btn.textContent='\u2713 Pushed to Xero';}
-  catch(e){if(!connected){showToast('Demo: Draft pushed (not connected to Xero)','info');btn.textContent='\u2713 Done (demo)';}else{showToast('Xero push failed: '+e.message,'error');btn.textContent='\uD83D\DE80 Push to Xero as draft';btn.disabled=false;return;}}
-  setTimeout(()=>{btn.disabled=false;btn.textContent='\uD83D\DE80 Push to Xero as draft';},4000);
-}
-function clearForm2(){['contactName2','invoiceNo2','reference2','notes2'].forEach(id=>document.getElementById(id).value='');document.getElementById('newContactHint2').style.display='none';document.getElementById('lineItems2').innerHTML='';auditAttachments2=[];document.getElementById('attachList2').innerHTML='';lineCount2=0;initForm2();showToast('Form cleared.','info');}
-
-/* ADMIN */
-function renderUsersTable(){const tbody=document.getElementById('usersTbody');tbody.innerHTML='';users.forEach(u=>{const tr=document.createElement('tr');const isSelf=currentUser&&u.id===currentUser.id;tr.innerHTML=`<td style="font-weight:500;">${u.name}${isSelf?' <span style="font-size:11px;color:var(--text3)">(you)</span>':''}</td><td style="font-family:monospace;font-size:13px">${u.username}</td><td><span class="role-badge ${u.role}">${u.role==='admin'?'Admin':'User'}</span></td><td><span style="color:${u.active?'var(--success)':'var(--text3)'};font-size:12px;font-weight:600">\u25cf ${u.active?'Active':'Inactive'}</span></td><td style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" onclick="openEditUser(${u.id})">Edit</button><button class="btn btn-sm" onclick="openResetPassword(${u.id})">Reset pwd</button>${!isSelf?`<button class="btn btn-sm btn-danger" onclick="toggleUserActive(${u.id})">${u.active?'Deactivate':'Activate'}</button><button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">Delete</button>`:''}</td>`;tbody.appendChild(tr);});}
-function openAddUser(){editingUserId=null;document.getElementById('modalTitle').textContent='Add user';['mName','mUsername','mPassword'].forEach(id=>document.getElementById(id).value='');document.getElementById('mRole').value='user';document.getElementById('modalError').textContent='';document.getElementById('userModal').classList.add('open');}
-function openEditUser(id){const u=users.find(x=>x.id===id);if(!u)return;editingUserId=id;document.getElementById('modalTitle').textContent='Edit user';document.getElementById('mName').value=u.name;document.getElementById('mUsername').value=u.username;document.getElementById('mPassword').value='';document.getElementById('mRole').value=u.role;document.getElementById('modalError').textContent='';document.getElementById('userModal').classList.add('open');}
-function closeModal(){document.getElementById('userModal').classList.remove('open');}
-function saveUser(){const name=document.getElementById('mName').value.trim(),username=document.getElementById('mUsername').value.trim(),password=document.getElementById('mPassword').value,role=document.getElementById('mRole').value,errEl=document.getElementById('modalError');if(!name||!username){errEl.textContent='Name and username are required.';return;}const dup=users.find(u=>u.username===username&&u.id!==editingUserId);if(dup){errEl.textContent='Username already exists.';return;}if(editingUserId){const u=users.find(x=>x.id===editingUserId);if(u){u.name=name;u.username=username;u.role=role;if(password)u.password=password;}showToast('User updated.','success');}else{if(!password){errEl.textContent='Password required.';return;}users.push({id:Date.now(),name,username,password,role,active:true});showToast('User added.','success');}saveUsers();closeModal();renderUsersTable();}
-function openResetPassword(id){resetUserId=id;const u=users.find(x=>x.id===id);document.getElementById('resetFor').textContent=u?u.name:'';document.getElementById('rPassword').value='';document.getElementById('resetError').textContent='';document.getElementById('resetModal').classList.add('open');}
-function closeResetModal(){document.getElementById('resetModal').classList.remove('open');}
-function doResetPassword(){const pw=document.getElementById('rPassword').value;if(!pw||pw.length<4){document.getElementById('resetError').textContent='At least 4 characters.';return;}const u=users.find(x=>x.id===resetUserId);if(u){u.password=pw;saveUsers();}closeResetModal();showToast('Password reset.','success');renderUsersTable();}
-function toggleUserActive(id){const u=users.find(x=>x.id===id);if(u){u.active=!u.active;saveUsers();renderUsersTable();}showToast(u.active?'User activated.':'User deactivated.','info');}
-function deleteUser(id){if(!confirm('Delete this user?'))return;users=users.filter(x=>x.id!==id);saveUsers();renderUsersTable();showToast('User deleted.','info');}
-
-/* TOAST */
-function showToast(msg,type='success'){const t=document.getElementById('toast');t.textContent=msg;t.className=type;t.style.display='block';clearTimeout(t._timer);t._timer=setTimeout(()=>t.style.display='none',4500);}
-
-/* DRAG & DROP */
-const qz=document.getElementById('queueDropZone');
-qz.addEventListener('dragover',e=>{e.preventDefault();qz.classList.add('drag');});
-qz.addEventListener('dragleave',()=>qz.classList.remove('drag'));
-qz.addEventListener('drop',e=>{e.preventDefault();qz.classList.remove('drag');const files=Array.from(e.dataTransfer.files).filter(f=>['application/pdf','image/png','image/jpeg','image/webp'].includes(f.type));if(!files.length){showToast('Please drop PDF or image files only.','error');return;}addFilesToQueue({files,value:''});});
-const sdz=document.getElementById('singleDropZone');
-sdz.addEventListener('dragover',e=>{e.preventDefault();sdz.classList.add('drag');});
-sdz.addEventListener('dragleave',()=>sdz.classList.remove('drag'));
-sdz.addEventListener('drop',e=>{e.preventDefault();sdz.classList.remove('drag');const f=e.dataTransfer.files[0];if(f)handleSingleUpload({files:[f],value:'f'});});
-</script>
-</body>
-</html>
+>
