@@ -767,21 +767,17 @@ type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3
   ]}];
 
   // Try multiple free models in sequence if one is rate limited
-  const models=['meta-llama/llama-4-maverick:free','google/gemma-4-31b-it:free','microsoft/phi-4-reasoning-plus:free'];
-  let resp, lastErr='';
-  for(const model of models){
-    resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+ANTHROPIC_API_KEY,'HTTP-Referer':'https://bhaskarthakur096-maker.github.io','X-Title':'Sterling Wells Invoice Tool'},
-      body:JSON.stringify({model,messages,max_tokens:1000})
-    });
-    if(resp.ok) break;
+  const resp=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+ANTHROPIC_API_KEY,'HTTP-Referer':'https://bhaskarthakur096-maker.github.io','X-Title':'Sterling Wells Invoice Tool'},
+    body:JSON.stringify({model:'openrouter/free',messages,max_tokens:1000})
+  });
+  if(!resp.ok){
     const errText=await resp.text();
-    lastErr='AI API error '+resp.status;
-    try{const j=JSON.parse(errText);lastErr=j.error?.message||lastErr;}catch(e){}
-    if(resp.status!==429) break; // Only retry on rate limit
+    let msg='AI API error '+resp.status;
+    try{const j=JSON.parse(errText);msg=j.error?.message||msg;}catch(e){}
+    throw new Error(msg);
   }
-  if(!resp.ok) throw new Error(lastErr);
   const data=await resp.json();
   let raw=data.choices?.[0]?.message?.content||'';
   raw=raw.replace(/```json|```/g,'').trim();
