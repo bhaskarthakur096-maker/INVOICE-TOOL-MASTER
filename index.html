@@ -780,7 +780,12 @@ type: ACCPAY=bill/purchase, ACCREC=sales. taxRateIndex: 0=no tax,1=exempt,2=5%,3
   }
   const data=await resp.json();
   let raw=data.choices?.[0]?.message?.content||'';
+  // Strip markdown fences, safety text, and anything before the first {
   raw=raw.replace(/```json|```/g,'').trim();
+  const jsonStart=raw.indexOf('{');
+  const jsonEnd=raw.lastIndexOf('}');
+  if(jsonStart===-1||jsonEnd===-1) throw new Error('No JSON found in AI response');
+  raw=raw.substring(jsonStart, jsonEnd+1);
   return JSON.parse(raw);
 }
 
